@@ -1,0 +1,17 @@
+# 1) Gerar a estrutura e template
+python main.py template
+
+# 2) Processar tudo (XLSX + resumo + PDF)
+python main.py process --input input\cadastro_equipamentos.xlsx --pdf
+
+# 3) Somente validar
+python main.py validate --input input\cadastro_equipamentos.xlsx
+
+# 4) Só relatórios XLSX
+python main.py report-xlsx --input input\cadastro_equipamentos.xlsx
+
+# 5) Só resumo
+python main.py summary --input input\cadastro_equipamentos.xlsx
+
+# 6) Só PDFs
+python main.py report-pdf --input input\cadastro_equipamentos.xlsx --pdf-dir output\pdf
