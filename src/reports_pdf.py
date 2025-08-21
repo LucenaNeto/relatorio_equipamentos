@@ -1,11 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Módulo: reports_pdf.py (versão com layout melhorado + área de logo)
-- Colunas com largura balanceada e quebra de linha (Paragraph).
-- Cabeçalho com espaço para logo (usa config/logo.png se existir).
-- Tabelas longas quebram em múltiplas páginas com cabeçalho repetido.
-"""
-
 import os
 import math
 from datetime import datetime
@@ -23,10 +15,7 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
 )
 
-
-
 # ===== Utilidades =====
-
 def _safe_filename(name: str) -> str:
     import re
     name = str(name).strip()
@@ -52,7 +41,6 @@ def _pcent(v) -> str:
         return f"{float(v)*100:.2f}%"
     except Exception:
         return "—"
-
 
 # ===== Estilos =====
 
@@ -100,7 +88,6 @@ def _build_styles():
         spaceAfter=2,
     )
     return estilo_titulo, estilo_meta, estilo_equip, estilo_num, estilo_h3
-
 
 # ===== Cabeçalho com logo =====
 
@@ -333,7 +320,12 @@ def _gerar_pdf_loja(loja: str, df_loja: pd.DataFrame, output_dir: str,
 
     story = []
     # Cabeçalho com espaço/uso de logo
-    story.append(_header_block(loja, output_dir, titulo, estilo_titulo, estilo_meta, logo_path))
+    story.append(
+    _header_block(
+        loja, output_dir, titulo, estilo_titulo, estilo_meta, logo_path,
+        logo_max_w_mm=55.0, logo_max_h_mm=25.0
+    )
+)
     story.append(Spacer(1, 3*mm))
 
     # Itens (tabelas com quebras limpas)
