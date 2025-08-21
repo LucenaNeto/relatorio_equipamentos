@@ -1,42 +1,31 @@
 # -*- coding: utf-8 -*-
 """
-Arquivo: main.py
-CLI para executar as tarefas do projeto sem modificar o pipeline.
+Arquivo: main.py (com MENU interativo)
+Permite executar as principais funções do projeto escolhendo por números.
 
-Subcomandos:
-  template      -> gera estrutura e template XLSX
-  validate      -> lê e valida o arquivo (gera logs/erros_validacao.xlsx se houver)
-  process       -> executa o pipeline completo (XLSX + resumo + PDF opcional)
-  report-xlsx   -> gera somente os relatórios XLSX por loja
-  summary       -> gera somente o resumo consolidado por loja
-  report-pdf    -> gera somente os PDFs por loja
-
-Exemplos:
-  python main.py template
-  python main.py validate --input input/cadastro_equipamentos.xlsx
-  python main.py process  --input input/cadastro_equipamentos.xlsx --pdf
-  python main.py report-xlsx --input input/cadastro_equipamentos.xlsx
-  python main.py summary     --input input/cadastro_equipamentos.xlsx
-  python main.py report-pdf  --input input/cadastro_equipamentos.xlsx --pdf-dir output/pdf
+Como usar:
+    py main.py
+ou
+    python main.py
 """
 
-import argparse
-from pathlib import Path
+import sys
 import warnings
+from pathlib import Path
 
-# Silencia aviso chato do openpyxl sobre validações do template
+# Silencia aviso do openpyxl sobre validações do template (não afeta os dados)
 warnings.filterwarnings("ignore", message="Data Validation extension is not supported")
 
-# Importações dos módulos já criados nos blocos anteriores
+# Importações dos módulos do projeto
 from src.generate_template import criar_template
 from src.processing import carregar_e_validar
 from src.pricing import aplicar_preco_sugerido, sugerir_precos, atualizar_historico
 from src.reports_xlsx import gerar_relatorios_xlsx
 from src.summary_xlsx import gerar_resumo_consolidado
 
-# PDF é opcional; se não estiver disponível, tratamos depois
+# PDF é opcional
 try:
-    from src.reports_pdf import gerar_relatorios_pdf  # Bloco 8
+    from src.reports_pdf import gerar_relatorios_pdf
     PDF_DISPONIVEL = True
 except Exception:
     gerar_relatorios_pdf = None
@@ -59,33 +48,68 @@ def _infer_base_dir(input_path: Path) -> Path:
 
 def _aplicar_precos_grupos(grupos: dict, base_dir: Path) -> dict:
     """
-    Aplica 'Preço sugerido' onde estiver vazio/<=0 e adiciona 'PrecoSugeridoCalc'
-    (apenas para transparência). Retorna novo dict {loja: DataFrame}.
+    Preenche 'Preço sugerido' onde estiver vazio/<=0 e adiciona 'PrecoSugeridoCalc'
+    (apenas para consulta). Retorna novo dict {loja: DataFrame}.
     """
     ajustados = {}
     for loja, df_loja in grupos.items():
         if df_loja is None or df_loja.empty:
             continue
         df_aj = aplicar_preco_sugerido(df_loja, base_dir=str(base_dir), coluna_destino="Preço sugerido")
-        # Coluna extra só para consulta; os geradores usam 'Preço sugerido' e 'Preço real'
         df_aj["PrecoSugeridoCalc"] = sugerir_precos(df_loja, base_dir=str(base_dir))
         ajustados[loja] = df_aj
     return ajustados
 
 
-# ---------- comandos ----------
+def _input_path(prompt: str, default_rel: str = "input/cadastro_equipamentos.xlsx") -> Path:
+    """
+    Pede um caminho de arquivo ao usuário. Se vazio, usa default_rel relativo à raiz do projeto.
+    Repete até existir.
+    """
+    while True:
+        raw = input(f"{prompt} (Enter para '{default_rel}'): ").strip()
+        if raw == "":
+            p = Path(default_rel)
+        else:
+            p = Path(raw)
+        # Se veio relativo, resolva contra a pasta atual
+        p = p if p.is_absolute() else (Path.cwd() / p)
+        if p.exists():
+            return p
+        print(f"[x] Arquivo não encontrado: {p}\n    Tente novamente.")
 
-def cmd_template(args):
-    base = Path(args.base).resolve()
+
+def _input_yesno(prompt: str, default: bool = True) -> bool:
+    """
+    Pergunta sim/não. Enter aceita o default.
+    """
+    suf = "[S/n]" if default else "[s/N]"
+    while True:
+        resp = input(f"{prompt} {suf}: ").strip().lower()
+        if resp == "" and default:
+            return True
+        if resp == "" and not default:
+            return False
+        if resp in ("s", "sim", "y", "yes"):
+            return True
+        if resp in ("n", "nao", "não", "no"):
+            return False
+        print("Digite 's' para sim ou 'n' para não.")
+
+
+# ---------- ações do menu ----------
+
+def acao_1_template():
+    base = Path.cwd() / "relatorio_equipamentos"
     path = criar_template(str(base))
-    print("Template criado em:", path)
+    print("\n[OK] Template criado em:", path)
 
 
-def cmd_validate(args):
-    input_path = Path(args.input).resolve()
-    base_dir = _infer_base_dir(input_path)
-    df_ok, df_err, grupos = carregar_e_validar(str(input_path))
-
+def acao_2_validate():
+    p = _input_path("Informe o caminho do XLSX (aba 'Cadastro')")
+    base_dir = _infer_base_dir(p)
+    df_ok, df_err, grupos = carregar_e_validar(str(p))
+    print("\n--- RESULTADO ---")
     print(f"Linhas válidas: {len(df_ok)}")
     print(f"Linhas com erro: {len(df_err)}")
     if not df_err.empty:
@@ -93,14 +117,15 @@ def cmd_validate(args):
     print("Lojas encontradas:", list(grupos.keys()))
 
 
-def cmd_process(args):
-    # Processamento completo, reaproveitando as funções que já temos
-    input_path = Path(args.input).resolve()
-    base_dir = _infer_base_dir(input_path)
+def acao_3_processar_completo():
+    p = _input_path("Informe o caminho do XLSX (aba 'Cadastro')")
+    gerar_pdf = _input_yesno("Gerar PDFs por loja também?", default=True)
+
+    base_dir = _infer_base_dir(p)
     output_dir = base_dir / "output"
 
     # 1) Ler + validar
-    df_ok, df_err, grupos = carregar_e_validar(str(input_path))
+    df_ok, df_err, grupos = carregar_e_validar(str(p))
     erros_path = str(base_dir / "logs" / "erros_validacao.xlsx") if not df_err.empty else None
 
     if df_ok is None or df_ok.empty or not grupos:
@@ -119,9 +144,9 @@ def cmd_process(args):
 
     # 5) PDFs (opcional)
     pdf_paths, pdf_error = [], None
-    if args.pdf:
+    if gerar_pdf:
         if PDF_DISPONIVEL and callable(gerar_relatorios_pdf):
-            pdf_dir = output_dir / (args.pdf_dir or "pdf")
+            pdf_dir = output_dir / "pdf"
             pdf_paths = gerar_relatorios_pdf(grupos_aj, output_dir=str(pdf_dir))
         else:
             pdf_error = "PDF indisponível (instale 'reportlab' e verifique src/reports_pdf.py)."
@@ -129,107 +154,107 @@ def cmd_process(args):
     # 6) Atualiza histórico com preços reais do arquivo
     _ = atualizar_historico(df_ok, base_dir=str(base_dir))
 
-    print({
-        "status": "ok",
-        "arquivos_lojas": arquivos_lojas,
-        "resumo_path": resumo_path,
-        "pdf_lojas": pdf_paths,
-        "pdf_error": pdf_error,
-        "erros_path": erros_path,
-    })
+    print("\n--- RESUMO DA EXECUÇÃO ---")
+    print("Status: ok")
+    print("Relatórios por loja:", *arquivos_lojas, sep="\n - ")
+    print("Resumo consolidado:", resumo_path)
+    if gerar_pdf:
+        if pdf_paths:
+            print("PDFs por loja:", *pdf_paths, sep="\n - ")
+        if pdf_error:
+            print("Aviso PDF:", pdf_error)
+    if erros_path:
+        print("Erros de validação:", erros_path)
 
 
-def cmd_report_xlsx(args):
-    input_path = Path(args.input).resolve()
-    base_dir = _infer_base_dir(input_path)
+def acao_4_report_xlsx():
+    p = _input_path("Informe o caminho do XLSX (aba 'Cadastro')")
+    base_dir = _infer_base_dir(p)
     output_dir = base_dir / "output"
 
-    df_ok, df_err, grupos = carregar_e_validar(str(input_path))
+    df_ok, df_err, grupos = carregar_e_validar(str(p))
     if df_ok.empty or not grupos:
-        print("Nada a fazer (sem dados válidos). Verifique logs/erros_validacao.xlsx se houve erros.")
+        print("\n[x] Nada a fazer (sem dados válidos). Verifique logs/erros_validacao.xlsx se houve erros.")
         return
 
     grupos_aj = _aplicar_precos_grupos(grupos, base_dir)
     arquivos = gerar_relatorios_xlsx(grupos_aj, output_dir=str(output_dir))
-    print("Relatórios gerados:", arquivos)
+    print("\n[OK] Relatórios gerados:", *arquivos, sep="\n - ")
 
 
-def cmd_summary(args):
-    input_path = Path(args.input).resolve()
-    base_dir = _infer_base_dir(input_path)
+def acao_5_summary():
+    p = _input_path("Informe o caminho do XLSX (aba 'Cadastro')")
+    base_dir = _infer_base_dir(p)
     output_dir = base_dir / "output"
 
-    df_ok, df_err, grupos = carregar_e_validar(str(input_path))
+    df_ok, df_err, grupos = carregar_e_validar(str(p))
     if df_ok.empty or not grupos:
-        print("Nada a resumir (sem dados válidos).")
+        print("\n[x] Nada a resumir (sem dados válidos).")
         return
 
     grupos_aj = _aplicar_precos_grupos(grupos, base_dir)
     caminho = gerar_resumo_consolidado(grupos_aj, output_dir=str(output_dir))
-    print("Resumo gerado em:", caminho)
+    print("\n[OK] Resumo gerado em:", caminho)
 
 
-def cmd_report_pdf(args):
+def acao_6_report_pdf():
     if not PDF_DISPONIVEL or not callable(gerar_relatorios_pdf):
-        print("PDF indisponível: instale 'reportlab' e confira src/reports_pdf.py.")
+        print("\n[x] PDF indisponível: instale 'reportlab' e confira src/reports_pdf.py.")
         return
 
-    input_path = Path(args.input).resolve()
-    base_dir = _infer_base_dir(input_path)
-    pdf_dir = base_dir / "output" / (args.pdf_dir or "pdf")
+    p = _input_path("Informe o caminho do XLSX (aba 'Cadastro')")
+    base_dir = _infer_base_dir(p)
+    pdf_dir = base_dir / "output" / "pdf"
 
-    df_ok, df_err, grupos = carregar_e_validar(str(input_path))
+    df_ok, df_err, grupos = carregar_e_validar(str(p))
     if df_ok.empty or not grupos:
-        print("Nada a fazer (sem dados válidos).")
+        print("\n[x] Nada a fazer (sem dados válidos).")
         return
 
     grupos_aj = _aplicar_precos_grupos(grupos, base_dir)
     pdfs = gerar_relatorios_pdf(grupos_aj, output_dir=str(pdf_dir))
-    print("PDFs gerados:", pdfs)
+    print("\n[OK] PDFs gerados:", *pdfs, sep="\n - ")
 
 
-# ---------- entrypoint ----------
+# ---------- menu ----------
+
+def mostrar_menu():
+    print("\n===== RELATÓRIO DE EQUIPAMENTOS - MENU =====")
+    print("1) Gerar estrutura + template XLSX")
+    print("2) Validar arquivo de entrada")
+    print("3) Processar tudo (XLSX + resumo + PDF opcional)")
+    print("4) Gerar apenas relatórios XLSX por loja")
+    print("5) Gerar apenas resumo consolidado")
+    print("6) Gerar apenas PDFs por loja")
+    print("7) Sair")
+
 
 def main():
-    parser = argparse.ArgumentParser(description="CLI - Relatórios de Equipamentos")
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    # template
-    p_tpl = sub.add_parser("template", help="Gera estrutura e o template XLSX")
-    p_tpl.add_argument("--base", default="relatorio_equipamentos", help="Pasta base do projeto")
-    p_tpl.set_defaults(func=cmd_template)
-
-    # validate
-    p_val = sub.add_parser("validate", help="Valida o arquivo de entrada e salva erros (se houver)")
-    p_val.add_argument("--input", "-i", required=True, help="Caminho do arquivo XLSX (aba 'Cadastro')")
-    p_val.set_defaults(func=cmd_validate)
-
-    # process
-    p_proc = sub.add_parser("process", help="Executa o pipeline completo (XLSX + resumo + PDF opcional)")
-    p_proc.add_argument("--input", "-i", required=True, help="Caminho do arquivo XLSX (aba 'Cadastro')")
-    p_proc.add_argument("--pdf", action="store_true", help="Se presente, gera também PDFs por loja")
-    p_proc.add_argument("--pdf-dir", default="pdf", help="Subpasta dentro de output/ para salvar os PDFs")
-    p_proc.set_defaults(func=cmd_process)
-
-    # report-xlsx
-    p_rx = sub.add_parser("report-xlsx", help="Gera apenas os relatórios XLSX por loja")
-    p_rx.add_argument("--input", "-i", required=True, help="Caminho do arquivo XLSX (aba 'Cadastro')")
-    p_rx.set_defaults(func=cmd_report_xlsx)
-
-    # summary
-    p_sum = sub.add_parser("summary", help="Gera apenas o resumo consolidado por loja")
-    p_sum.add_argument("--input", "-i", required=True, help="Caminho do arquivo XLSX (aba 'Cadastro')")
-    p_sum.set_defaults(func=cmd_summary)
-
-    # report-pdf
-    p_pdf = sub.add_parser("report-pdf", help="Gera apenas os PDFs por loja")
-    p_pdf.add_argument("--input", "-i", required=True, help="Caminho do arquivo XLSX (aba 'Cadastro')")
-    p_pdf.add_argument("--pdf-dir", default="pdf", help="Subpasta dentro de output/ para salvar os PDFs")
-    p_pdf.set_defaults(func=cmd_report_pdf)
-
-    args = parser.parse_args()
-    args.func(args)
+    while True:
+        mostrar_menu()
+        escolha = input("Escolha uma opção (1-7): ").strip()
+        if escolha == "1":
+            acao_1_template()
+        elif escolha == "2":
+            acao_2_validate()
+        elif escolha == "3":
+            acao_3_processar_completo()
+        elif escolha == "4":
+            acao_4_report_xlsx()
+        elif escolha == "5":
+            acao_5_summary()
+        elif escolha == "6":
+            acao_6_report_pdf()
+        elif escolha == "7":
+            print("Saindo... até mais!")
+            break
+        else:
+            print("Opção inválida. Tente novamente.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrompido pelo usuário.")
+        sys.exit(0)

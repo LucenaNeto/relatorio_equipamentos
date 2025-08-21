@@ -1,44 +1,33 @@
 # -*- coding: utf-8 -*-
 """
-Módulo: reports_pdf.py
-Gera relatórios PDF por loja a partir do dicionário { loja: DataFrame }.
-
-Requisitos:
-    pip install reportlab
-
-Uso (exemplo rápido):
-    from src.processing import carregar_e_validar
-    from src.pricing import aplicar_preco_sugerido
-    from src.reports_pdf import gerar_relatorios_pdf
-
-    df_ok, df_err, grupos = carregar_e_validar("relatorio_equipamentos/input/cadastro_equipamentos.xlsx")
-    # preenche preço sugerido onde estiver vazio
-    grupos_aj = {lj: aplicar_preco_sugerido(df, base_dir="relatorio_equipamentos")
-                 for lj, df in grupos.items()}
-    pdfs = gerar_relatorios_pdf(grupos_aj, output_dir="relatorio_equipamentos/output/pdf")
-    print(pdfs)
+Módulo: reports_pdf.py (versão com layout melhorado + área de logo)
+- Colunas com largura balanceada e quebra de linha (Paragraph).
+- Cabeçalho com espaço para logo (usa config/logo.png se existir).
+- Tabelas longas quebram em múltiplas páginas com cabeçalho repetido.
 """
 
 import os
-from datetime import datetime
 import math
+from datetime import datetime
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 
-# ReportLab
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.lib.enums import TA_RIGHT, TA_LEFT
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
 )
+
 
 
 # ===== Utilidades =====
 
 def _safe_filename(name: str) -> str:
-    """Sanitiza o nome do arquivo para evitar caracteres inválidos."""
     import re
     name = str(name).strip()
     name = re.sub(r"[^\w\-]+", "_", name, flags=re.UNICODE)
@@ -46,12 +35,10 @@ def _safe_filename(name: str) -> str:
 
 
 def _brl(v) -> str:
-    """Formata número como moeda brasileira (R$ 1.234,56); NaN -> '—'."""
     if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
         return "—"
     try:
         s = f"{float(v):,.2f}"
-        # troca separadores para padrão brasileiro
         s = s.replace(",", "X").replace(".", ",").replace("X", ".")
         return f"R$ {s}"
     except Exception:
@@ -59,7 +46,6 @@ def _brl(v) -> str:
 
 
 def _pcent(v) -> str:
-    """Formata percentual com 2 casas; NaN -> '—'."""
     if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
         return "—"
     try:
@@ -68,23 +54,116 @@ def _pcent(v) -> str:
         return "—"
 
 
+# ===== Estilos =====
+
+def _build_styles():
+    styles = getSampleStyleSheet()
+    # Título e metadados
+    estilo_titulo = ParagraphStyle(
+        "Titulo",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=14,
+        spaceAfter=4,
+    )
+    estilo_meta = ParagraphStyle(
+        "Meta",
+        parent=styles["Normal"],
+        fontSize=9,
+        textColor=colors.HexColor("#555555"),
+        spaceAfter=2,
+    )
+    # Texto da coluna "Equipamento": quebra palavras longas
+    estilo_equip = ParagraphStyle(
+        "Equip",
+        parent=styles["Normal"],
+        fontSize=8,
+        leading=10,
+        wordWrap="CJK",     # permite quebra mesmo em palavras compridas
+        alignment=TA_LEFT,
+    )
+    # Números alinhados à direita
+    estilo_num = ParagraphStyle(
+        "Num",
+        parent=styles["Normal"],
+        fontSize=8,
+        leading=10,
+        alignment=TA_RIGHT,
+    )
+    # Cabeçalho de seção
+    estilo_h3 = ParagraphStyle(
+        "H3",
+        parent=styles["Heading3"],
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        spaceBefore=6,
+        spaceAfter=2,
+    )
+    return estilo_titulo, estilo_meta, estilo_equip, estilo_num, estilo_h3
+
+
+# ===== Cabeçalho com logo =====
+
+def _header_block(loja: str, output_dir: str, titulo: str, estilo_titulo, estilo_meta,
+                  logo_path: str | None = None, logo_max_w_mm: float = 35.0, logo_max_h_mm: float = 18.0):
+    """
+    Retorna um Table com 2 colunas: à esquerda título+metas, à direita logo (se houver).
+    Se logo não existir, exibe um placeholder discreto.
+    """
+    left_cells = [
+        Paragraph(titulo, estilo_titulo),
+        Paragraph(f"<b>Loja:</b> {loja}", estilo_meta),
+        Paragraph(f"<b>Gerado em:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}", estilo_meta),
+    ]
+
+    # Descobrir logo padrão em config/ se não veio por parâmetro
+    logo_flowable = None
+    if logo_path is None:
+        base = Path(output_dir).resolve().parent  # .../relatorio_equipamentos
+        cand = base / "config" / "logo.png"
+        if cand.exists():
+            logo_path = str(cand)
+
+    if logo_path and os.path.exists(logo_path):
+        try:
+            img = Image(logo_path)
+            img._restrictSize(logo_max_w_mm * mm, logo_max_h_mm * mm)
+            logo_flowable = img
+        except Exception:
+            logo_flowable = None
+
+    # Se não tiver logo, cria um placeholder
+    if logo_flowable is None:
+        ph = Table([["Sua logo aqui"]], colWidths=[logo_max_w_mm * mm], rowHeights=[logo_max_h_mm * mm])
+        ph.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#888888")),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ]))
+        logo_flowable = ph
+
+    # Monta header em 2 colunas
+    header_table = Table(
+        [[left_cells, logo_flowable]],
+        colWidths=[(180 - logo_max_w_mm - 5) * mm, (logo_max_w_mm) * mm],
+    )
+    header_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return header_table
+
+
 # ===== Cálculos por loja =====
 
 def _preparar_itens(df_loja: pd.DataFrame) -> pd.DataFrame:
-    """
-    Gera colunas calculadas para a tabela Itens:
-      - Total sugerido = Qtd * Preço sugerido
-      - Total real     = Qtd * (Preço real, ou Preço sugerido quando vazio)
-      - Diferença (R$) e Diferença (%)
-    """
     df = df_loja.copy()
-
-    # Garantir tipos
     df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce").fillna(0).astype(int).clip(lower=0)
     df["Preço sugerido"] = pd.to_numeric(df["Preço sugerido"], errors="coerce")
     df["Preço real"]     = pd.to_numeric(df["Preço real"], errors="coerce")
-
-    # Negativos viram NaN (não faz sentido)
     for c in ["Preço sugerido", "Preço real"]:
         df[c] = df[c].where(df[c].isna() | (df[c] >= 0), np.nan)
 
@@ -106,7 +185,6 @@ def _preparar_itens(df_loja: pd.DataFrame) -> pd.DataFrame:
 
 
 def _resumo_da_loja(df_itens: pd.DataFrame) -> dict:
-    """Calcula agregados para a seção Resumo da loja."""
     total_sugerido = df_itens["Total sugerido"].sum()
     total_real     = df_itens["Total real"].sum()
     return {
@@ -121,40 +199,47 @@ def _resumo_da_loja(df_itens: pd.DataFrame) -> dict:
 
 # ===== Renderização do PDF =====
 
-def _tabela_itens(df_itens: pd.DataFrame, styles, largura_util_mm=180, linhas_por_tabela=30):
+def _tabela_itens(df_itens: pd.DataFrame, estilos, largura_util_mm=180, linhas_por_tabela=28):
     """
-    Constrói uma lista de elementos (Tables + PageBreak) para os itens,
-    quebrando em múltiplas tabelas quando houver muitas linhas.
+    Constrói Tables para os itens, com quebra em blocos.
+    Usa Paragraph para forçar quebra de linha em textos longos e alinhamento correto.
     """
+    _, _, estilo_equip, estilo_num, _ = estilos
     elementos = []
 
-    # Cabeçalho da tabela
+    # Cabeçalho
     header = [
-        "Equipamento", "Qtd", "Preço sugerido", "Preço real",
-        "Total sugerido", "Total real", "Diferença (R$)", "Diferença (%)"
+        Paragraph("Equipamento", estilo_equip),
+        Paragraph("Qtd", estilo_num),
+        Paragraph("Preço sugerido", estilo_num),
+        Paragraph("Preço real", estilo_num),
+        Paragraph("Total sugerido", estilo_num),
+        Paragraph("Total real", estilo_num),
+        Paragraph("Diferença (R$)", estilo_num),
+        Paragraph("Diferença (%)", estilo_num),
     ]
 
-    # Converte DataFrame em lista de listas formatada
+    # Linhas (convertendo para Paragraph quando útil)
     dados = []
     for _, r in df_itens.iterrows():
         dados.append([
-            str(r["Equipamento"]),
-            int(r["Quantidade"]),
-            _brl(r["Preço sugerido"]),
-            _brl(r["Preço real"]),
-            _brl(r["Total sugerido"]),
-            _brl(r["Total real"]),
-            _brl(r["Diferença (R$)"]),
-            _pcent(r["Diferença (%)"]),
+            Paragraph(str(r["Equipamento"]), estilo_equip),
+            Paragraph(str(int(r["Quantidade"])), estilo_num),
+            Paragraph(_brl(r["Preço sugerido"]), estilo_num),
+            Paragraph(_brl(r["Preço real"]), estilo_num),
+            Paragraph(_brl(r["Total sugerido"]), estilo_num),
+            Paragraph(_brl(r["Total real"]), estilo_num),
+            Paragraph(_brl(r["Diferença (R$)"]), estilo_num),
+            Paragraph(_pcent(r["Diferença (%)"]), estilo_num),
         ])
 
-    # Quebra em blocos
     total = len(dados)
     blocos = math.ceil(total / linhas_por_tabela) if total else 1
     largura_util = largura_util_mm * mm
 
-    # Larguras relativas das colunas (somatório = 1.0), depois multiplicamos pela largura útil
-    pesos = [0.30, 0.07, 0.12, 0.12, 0.12, 0.12, 0.075, 0.065]
+    # Distribuição de larguras (somatório = 1.0)
+    # Mais espaço para "Equipamento"
+    pesos = [0.40, 0.07, 0.10, 0.10, 0.10, 0.10, 0.07, 0.06]
     col_widths = [largura_util * p for p in pesos]
 
     for i in range(blocos):
@@ -164,54 +249,61 @@ def _tabela_itens(df_itens: pd.DataFrame, styles, largura_util_mm=180, linhas_po
 
         t = Table(bloco_dados, colWidths=col_widths, repeatRows=1)
         t.setStyle(TableStyle([
+            # Cabeçalho
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-            ("ALIGN", (0, 0), (0, -1), "LEFT"),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, 0), 9),
+
+            # Corpo
             ("FONTSIZE", (0, 1), (-1, -1), 8),
-            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
+            ("ALIGN", (0, 1), (0, -1), "LEFT"),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FAFAFA")]),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ]))
         elementos.append(t)
 
-        # Quebra de página entre blocos (menos no último)
         if i < blocos - 1:
-            elementos.append(Spacer(1, 6 * mm))
+            elementos.append(Spacer(1, 5 * mm))
             elementos.append(PageBreak())
 
     return elementos
 
 
-def _tabela_resumo(resumo: dict, largura_util_mm=100):
-    """Cria a pequena tabela de resumo com métricas agregadas."""
-    header = ["Métrica", "Valor"]
+def _tabela_resumo(resumo: dict, estilos, largura_util_mm=120):
+    _, _, _, estilo_num, _ = estilos
+    estilo_lbl = ParagraphStyle("Lbl", fontName="Helvetica", fontSize=9, leading=11)
+    header = [Paragraph("Métrica", estilo_lbl), Paragraph("Valor", estilo_lbl)]
     dados = [
-        ["Itens", resumo["Itens"]],
-        ["Qtd total", resumo["Qtd total"]],
-        ["Total sugerido", _brl(resumo["Total sugerido"])],
-        ["Total real", _brl(resumo["Total real"])],
-        ["Diferença (R$)", _brl(resumo["Diferença (R$)"])],
-        ["Diferença (%)", _pcent(resumo["Diferença (%)"])],
+        [Paragraph("Itens", estilo_lbl), Paragraph(str(resumo["Itens"]), estilo_num)],
+        [Paragraph("Qtd total", estilo_lbl), Paragraph(str(resumo["Qtd total"]), estilo_num)],
+        [Paragraph("Total sugerido", estilo_lbl), Paragraph(_brl(resumo["Total sugerido"]), estilo_num)],
+        [Paragraph("Total real", estilo_lbl), Paragraph(_brl(resumo["Total real"]), estilo_num)],
+        [Paragraph("Diferença (R$)", estilo_lbl), Paragraph(_brl(resumo["Diferença (R$)"]), estilo_num)],
+        [Paragraph("Diferença (%)", estilo_lbl), Paragraph(_pcent(resumo["Diferença (%)"]), estilo_num)],
     ]
     t = Table([header] + dados, colWidths=[(largura_util_mm*0.5)*mm, (largura_util_mm*0.5)*mm])
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
         ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
     ]))
     return t
 
 
 def _rodape(canvas, doc):
-    """Desenha número de página no rodapé."""
     page_num = canvas.getPageNumber()
     canvas.setFont("Helvetica", 8)
     canvas.setFillColor(colors.HexColor("#555555"))
@@ -219,56 +311,40 @@ def _rodape(canvas, doc):
 
 
 def _gerar_pdf_loja(loja: str, df_loja: pd.DataFrame, output_dir: str,
-                    titulo: str = "Relatório de Equipamentos por Loja") -> str:
-    """Gera um PDF para a loja informada."""
+                    titulo: str = "Relatório de Equipamentos por Loja",
+                    logo_path: str | None = None) -> str:
     os.makedirs(output_dir, exist_ok=True)
     fname = f"relatorio_loja_{_safe_filename(loja)}.pdf"
     path = os.path.join(output_dir, fname)
 
-    # Prepara dados
+    estilos = _build_styles()
+    estilo_titulo, estilo_meta, _, _, estilo_h3 = estilos
+
+    # Dados
     df_itens = _preparar_itens(df_loja)
     resumo = _resumo_da_loja(df_itens)
 
-    # Documento
     doc = SimpleDocTemplate(
         path,
         pagesize=A4,
         leftMargin=15*mm, rightMargin=15*mm,
         topMargin=14*mm, bottomMargin=14*mm
     )
-    styles = getSampleStyleSheet()
-    estilo_titulo = ParagraphStyle(
-        "Titulo",
-        parent=styles["Heading1"],
-        fontName="Helvetica-Bold",
-        fontSize=14,
-        spaceAfter=6,
-    )
-    estilo_meta = ParagraphStyle(
-        "Meta",
-        parent=styles["Normal"],
-        fontSize=9,
-        textColor=colors.HexColor("#555555"),
-        spaceAfter=4,
-    )
 
     story = []
-    # Cabeçalho
-    story.append(Paragraph(titulo, estilo_titulo))
-    story.append(Paragraph(f"<b>Loja:</b> {loja}", estilo_meta))
-    story.append(Paragraph(f"<b>Gerado em:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}", estilo_meta))
-    story.append(Spacer(1, 4*mm))
+    # Cabeçalho com espaço/uso de logo
+    story.append(_header_block(loja, output_dir, titulo, estilo_titulo, estilo_meta, logo_path))
+    story.append(Spacer(1, 3*mm))
 
-    # Tabela de Itens (pode quebrar em múltiplas páginas)
-    story.extend(_tabela_itens(df_itens, styles, largura_util_mm=180, linhas_por_tabela=30))
+    # Itens (tabelas com quebras limpas)
+    story.extend(_tabela_itens(df_itens, estilos, largura_util_mm=180, linhas_por_tabela=28))
     story.append(Spacer(1, 6*mm))
 
     # Resumo
-    story.append(Paragraph("<b>Resumo</b>", styles["Heading3"]))
+    story.append(Paragraph("Resumo", estilo_h3))
     story.append(Spacer(1, 2*mm))
-    story.append(_tabela_resumo(resumo, largura_util_mm=120))
+    story.append(_tabela_resumo(resumo, estilos, largura_util_mm=120))
 
-    # Build
     doc.build(story, onFirstPage=_rodape, onLaterPages=_rodape)
     return path
 
@@ -276,16 +352,18 @@ def _gerar_pdf_loja(loja: str, df_loja: pd.DataFrame, output_dir: str,
 # ===== Função pública =====
 
 def gerar_relatorios_pdf(grupos_por_loja: dict[str, pd.DataFrame], output_dir: str,
-                         titulo_relatorio: str = "Relatório de Equipamentos por Loja") -> list[str]:
+                         titulo_relatorio: str = "Relatório de Equipamentos por Loja",
+                         logo_path: str | None = None) -> list[str]:
     """
     Gera PDFs para todas as lojas do dicionário {loja: DataFrame}.
-    Retorna lista com os caminhos dos arquivos gerados.
+    - Se 'logo_path' não for informado, tenta usar 'config/logo.png' automaticamente (se existir).
+    Retorna lista com caminhos dos arquivos gerados.
     """
     os.makedirs(output_dir, exist_ok=True)
     arquivos = []
     for loja, df_loja in grupos_por_loja.items():
         if df_loja is None or df_loja.empty:
             continue
-        path = _gerar_pdf_loja(loja, df_loja, output_dir, titulo=titulo_relatorio)
+        path = _gerar_pdf_loja(loja, df_loja, output_dir, titulo=titulo_relatorio, logo_path=logo_path)
         arquivos.append(path)
     return arquivos

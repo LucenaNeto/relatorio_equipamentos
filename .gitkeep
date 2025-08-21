@@ -1,0 +1,4 @@
+type NUL > relatorio_equipamentos\input\.gitkeep
+type NUL > relatorio_equipamentos\output\.gitkeep
+type NUL > relatorio_equipamentos\logs\.gitkeep
+type NUL > relatorio_equipamentos\config\.gitkeep
