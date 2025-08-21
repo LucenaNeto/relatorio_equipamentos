@@ -1,0 +1,49 @@
+# ---- Python / build / cache ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.build/
+build/
+dist/
+.cache/
+.pytest_cache/
+.mypy_cache/
+coverage.xml
+htmlcov/
+.coverage*
+*.log
+
+# ---- Ambientes / variáveis ----
+.venv/
+venv/
+.env
+.env.*
+*.env
+*.dotenv
+.python-version
+
+# ---- SO / Editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Dados do projeto (gerados em runtime) ----
+# Tudo dentro dessas pastas será ignorado (inclusive sua logo em output/config/)
+relatorio_equipamentos/input/**
+relatorio_equipamentos/output/**
+relatorio_equipamentos/logs/**
+relatorio_equipamentos/config/**
+
+# Mantém as pastas no repositório com placeholders (adicione .gitkeep)
+!relatorio_equipamentos/input/.gitkeep
+!relatorio_equipamentos/output/.gitkeep
+!relatorio_equipamentos/logs/.gitkeep
+!relatorio_equipamentos/config/.gitkeep
+
+# (Opcional) se quiser versionar a logo mesmo estando em output/config, descomente a linha abaixo:
+# !relatorio_equipamentos/output/config/logo.png
